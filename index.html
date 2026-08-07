@@ -4,17 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Treni RE / Rubiera ↔ Parma</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Treni RE↔PR">
 <style>
   :root {
-    color-scheme: light dark;
-    --bg: #0b0d12;
-    --card: #161a22;
-    --text: #f2f3f5;
-    --muted: #9aa3b2;
-    --ok: #34c759;
-    --warn: #ffb020;
-    --bad: #ff453a;
-    --line: #262b36;
+    color-scheme: light;
+    --bg: #ffffff;
+    --card: #f7f7f8;
+    --text: #1c1e21;
+    --muted: #5f6672;
+    --ok: #0f7a2e;
+    --warn: #8a5200;
+    --bad: #b3261e;
+    --line: #e2e4e8;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -30,6 +39,17 @@
   }
   h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
   #updated { font-size: 0.75rem; color: var(--muted); }
+  #filters { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 12px; }
+  #filters button {
+    font-size: 0.8rem; padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    font-family: inherit; cursor: pointer;
+  }
+  #filters button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .section-label {
+    font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.03em; padding: 18px 4px 6px;
+  }
   ul { list-style: none; margin: 0; padding: 0; }
   li {
     display: flex; align-items: center; gap: 10px;
@@ -68,9 +88,14 @@
   <h1>RE / Rubiera ↔ Parma</h1>
   <span id="updated"></span>
 </header>
+<div id="filters"></div>
 <ul id="list"></ul>
-<div id="empty" hidden>Nessun treno regionale nella prossima finestra oraria.</div>
+<div id="empty" hidden></div>
 <div id="error" hidden>Dati non disponibili al momento.</div>
+<div id="historyWrap" hidden>
+  <div class="section-label">Partiti di recente</div>
+  <ul id="history"></ul>
+</div>
 
 <script>
 // Nessun backend: fetch diretto dal browser all'API di ViaggiaTreno tramite
@@ -89,9 +114,17 @@ const CORS_API_KEY = ''; // es. 'live_xxxxxxxx', lasciare vuoto per uso anonimo
 const VIAGGIATRENO = 'http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno';
 
 const STATIONS = { S05023: 'Reggio Emilia', S05031: 'Rubiera', S05014: 'Parma' };
+const STATION_COORDS = {
+  S05023: { lat: 44.697778, lon: 10.643056 }, // Reggio Emilia
+  S05031: { lat: 44.6561,   lon: 10.7802   }, // Rubiera
+  S05014: { lat: 44.810271, lon: 10.328393 }, // Parma
+};
+const GEO_RADIUS_KM = 3;
 const WEST_HINTS = ['PARMA', 'FIDENZA', 'PIACENZA', 'CREMONA', 'MILANO'];
 const EAST_BEYOND_RUBIERA_HINTS = ['RUBIERA', 'MODENA', 'BOLOGNA', 'IMOLA', 'RIMINI', 'ANCONA'];
 const REFRESH_MS = 30000;
+const HISTORY_WINDOW_MS = 30 * 60000;
+const MAX_MISSED_CYCLES = 3; // tollera qualche hiccup del proxy CORS prima di droppare un treno mai piu' visto
 
 function formatViaggiatrenoDate(date) {
   // lc-debt fix (2026-08-07): l'offset era hardcoded a GMT+0100, sbagliato
@@ -109,6 +142,12 @@ function formatViaggiatrenoDate(date) {
   if (hour === '24') hour = '00';
   const offset = (get('timeZoneName') || 'GMT+01:00').replace(':', '');
   return `${get('weekday')} ${get('month')} ${get('day')} ${get('year')} ${hour}:${get('minute')}:${get('second')} ${offset}`;
+}
+
+function formatHHMM(ms) {
+  return new Intl.DateTimeFormat('it-IT', {
+    timeZone: 'Europe/Rome', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(new Date(ms));
 }
 
 async function fetchPartenze(stationId, now) {
@@ -135,13 +174,15 @@ function trainStatus(t) {
   return 'regolare';
 }
 function buildRow(t, originId, destLabel) {
+  const ritardo = typeof t.ritardo === 'number' ? t.ritardo : 0;
   return {
     numeroTreno: t.numeroTreno,
     origine: STATIONS[originId],
     destinazione: destLabel,
     orarioProgrammato: t.compOrarioPartenza,
     orarioPartenzaMs: t.orarioPartenza,
-    ritardo: typeof t.ritardo === 'number' ? t.ritardo : 0,
+    ritardo,
+    actualDepartureMs: t.orarioPartenza + ritardo * 60000,
     binario: t.binarioEffettivoPartenzaDescrizione || t.binarioProgrammatoPartenzaDescrizione || null,
     stato: trainStatus(t),
   };
@@ -170,7 +211,123 @@ async function fetchTrains() {
   const prRows = collect(prP, 'S05014', fallbackEast, (touched) =>
     touched.has('S05031') ? 'Reggio Emilia e Rubiera' : touched.has('S05023') ? 'Reggio Emilia' : null
   );
-  return [...reRows, ...ruRows, ...prRows].sort((a, b) => a.orarioPartenzaMs - b.orarioPartenzaMs);
+  // Ordinamento reale (per orario effettivo) applicato in deriveLists(), non qui.
+  return [...reRows, ...ruRows, ...prRows];
+}
+
+// --- Stato treni: fonte di verita' unica per lista principale + storico ---
+// lc-debt: storico solo in-memory, nessuna persistenza (localStorage) tra
+// reload. Upgrade path se necessario: localStorage con TTL 30min.
+const trainState = new Map();
+function trainKey(row) { return `${row.numeroTreno}_${row.origine}_${row.orarioProgrammato}`; }
+
+function updateTrainState(freshRows, now) {
+  const freshKeys = new Set();
+  for (const row of freshRows) {
+    const key = trainKey(row);
+    freshKeys.add(key);
+    trainState.set(key, { row, missedCycles: 0, lastSeenAt: now });
+  }
+  for (const [key, entry] of trainState) {
+    if (freshKeys.has(key)) continue;
+    entry.missedCycles += 1;
+    // Mai piu' visto dopo qualche ciclo: droppa a prescindere da stato/orario,
+    // altrimenti resterebbe congelato in cima alla lista con dati stantii.
+    if (entry.missedCycles > MAX_MISSED_CYCLES) trainState.delete(key);
+  }
+  // Pruning incondizionato (backstop indipendente da missedCycles): un'entry
+  // vista regolarmente ma con orario ormai troppo vecchio esce comunque.
+  for (const [key, entry] of trainState) {
+    if (entry.row.actualDepartureMs < now - HISTORY_WINDOW_MS) trainState.delete(key);
+  }
+}
+
+function deriveLists(now) {
+  const upcoming = [];
+  const storico = [];
+  for (const entry of trainState.values()) {
+    if (entry.row.actualDepartureMs > now) upcoming.push(entry.row);
+    else storico.push(entry.row);
+  }
+  upcoming.sort((a, b) => a.actualDepartureMs - b.actualDepartureMs);
+  storico.sort((a, b) => b.actualDepartureMs - a.actualDepartureMs);
+  return { upcoming, storico };
+}
+
+// --- Filtro stazione di partenza + geolocalizzazione ---
+let selectedStation = null; // codice stazione, o null = "Tutte"
+let userOverrodeFilter = false;
+let latestUpcoming = [];
+let latestHistory = [];
+let hasFetchedOnce = false;
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function makeChip(code, label) {
+  const btn = document.createElement('button');
+  btn.textContent = label;
+  btn.dataset.code = code || '';
+  btn.addEventListener('click', () => {
+    userOverrodeFilter = true;
+    selectedStation = code;
+    applyFilterAndRender();
+  });
+  return btn;
+}
+
+function updateFilterChipsUI() {
+  const container = document.getElementById('filters');
+  for (const btn of container.children) {
+    const code = btn.dataset.code || null;
+    btn.classList.toggle('active', code === selectedStation);
+  }
+}
+
+function initFilters() {
+  const container = document.getElementById('filters');
+  container.appendChild(makeChip(null, 'Tutte'));
+  for (const code of Object.keys(STATIONS)) container.appendChild(makeChip(code, STATIONS[code]));
+  updateFilterChipsUI();
+  tryAutoSelectByGeolocation();
+}
+
+function tryAutoSelectByGeolocation() {
+  if (!('geolocation' in navigator)) return;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      if (userOverrodeFilter) return;
+      const { latitude, longitude } = pos.coords;
+      let nearest = null;
+      let nearestDist = Infinity;
+      for (const [code, coord] of Object.entries(STATION_COORDS)) {
+        const d = haversineKm(latitude, longitude, coord.lat, coord.lon);
+        if (d < nearestDist) { nearestDist = d; nearest = code; }
+      }
+      if (nearest && nearestDist <= GEO_RADIUS_KM) {
+        selectedStation = nearest;
+        applyFilterAndRender();
+      }
+    },
+    () => {}, // permesso negato/errore/timeout: nessun filtro, fallimento silenzioso
+    { timeout: 5000, maximumAge: 60000 }
+  );
+}
+
+function applyFilterAndRender() {
+  updateFilterChipsUI();
+  if (!hasFetchedOnce) return; // aspetta il primo fetch, altrimenti si mostra "vuoto" prima del tempo
+  const filterName = selectedStation ? STATIONS[selectedStation] : null;
+  const upcoming = filterName ? latestUpcoming.filter((r) => r.origine === filterName) : latestUpcoming;
+  const storico = filterName ? latestHistory.filter((r) => r.origine === filterName) : latestHistory;
+  render(upcoming, filterName);
+  renderHistory(storico);
 }
 
 function delayClass(min, stato) {
@@ -181,83 +338,107 @@ function delayClass(min, stato) {
   return 'ok';
 }
 
-function delayText(min, stato) {
+function delayText(min, stato, actualDepartureMs) {
   if (stato === 'cancellato') return 'CANCELLATO';
   if (stato === 'parzialmente cancellato') return 'PARZ. CANCELLATO';
   if (stato === 'non partito') return 'non partito';
   if (!min || min <= 0) return 'in orario';
-  return `+${min} min`;
+  return `+${min} min → ${formatHHMM(actualDepartureMs)}`;
 }
 
-function render(trains) {
-  const list = document.getElementById('list');
-  const empty = document.getElementById('empty');
-  const error = document.getElementById('error');
-  error.hidden = true;
+function buildTrainLi(t, opts) {
+  const li = document.createElement('li');
+  const cls = delayClass(t.ritardo, t.stato);
+
+  const time = document.createElement('div');
+  time.className = 'time';
+  time.textContent = (opts && opts.useActualTime) ? formatHHMM(t.actualDepartureMs) : (t.orarioProgrammato || '--:--');
+
+  const mid = document.createElement('div');
+  mid.className = 'mid';
+  const route = document.createElement('div');
+  route.className = 'route';
+  route.textContent = `${t.origine} → ${t.destinazione}`;
+  const sub = document.createElement('div');
+  sub.className = 'via';
+  sub.textContent = [t.via ? `via ${t.via}` : null, `REG ${t.numeroTreno}`].filter(Boolean).join(' · ');
+  mid.appendChild(route);
+  mid.appendChild(sub);
+
+  const platform = document.createElement('div');
+  platform.className = 'right';
+  const pf = document.createElement('div');
+  pf.className = 'platform';
+  pf.textContent = t.binario || '–';
+  const pfLabel = document.createElement('div');
+  pfLabel.className = 'platform-label';
+  pfLabel.textContent = 'BIN';
+  platform.appendChild(pf);
+  platform.appendChild(pfLabel);
+
+  const delay = document.createElement('div');
+  delay.className = 'right';
+  const d = document.createElement('div');
+  d.className = `delay ${cls}`;
+  d.textContent = delayText(t.ritardo, t.stato, t.actualDepartureMs);
+  delay.appendChild(d);
+
+  li.appendChild(time);
+  li.appendChild(mid);
+  li.appendChild(platform);
+  li.appendChild(delay);
+  return li;
+}
+
+function renderListInto(ulId, trains, opts) {
+  const list = document.getElementById(ulId);
   list.innerHTML = '';
+  for (const t of trains) list.appendChild(buildTrainLi(t, opts));
+}
 
+function render(trains, filterName) {
+  const empty = document.getElementById('empty');
+  renderListInto('list', trains);
   if (!trains || trains.length === 0) {
+    empty.textContent = filterName
+      ? `Nessun treno da ${filterName} nella prossima finestra oraria.`
+      : 'Nessun treno regionale nella prossima finestra oraria.';
     empty.hidden = false;
-    return;
+  } else {
+    empty.hidden = true;
   }
-  empty.hidden = true;
+}
 
-  for (const t of trains) {
-    const li = document.createElement('li');
-    const cls = delayClass(t.ritardo, t.stato);
-
-    const time = document.createElement('div');
-    time.className = 'time';
-    time.textContent = t.orarioProgrammato || '--:--';
-
-    const mid = document.createElement('div');
-    mid.className = 'mid';
-    const route = document.createElement('div');
-    route.className = 'route';
-    route.textContent = `${t.origine} → ${t.destinazione}`;
-    const sub = document.createElement('div');
-    sub.className = 'via';
-    sub.textContent = [t.via ? `via ${t.via}` : null, `REG ${t.numeroTreno}`].filter(Boolean).join(' · ');
-    mid.appendChild(route);
-    mid.appendChild(sub);
-
-    const platform = document.createElement('div');
-    platform.className = 'right';
-    const pf = document.createElement('div');
-    pf.className = 'platform';
-    pf.textContent = t.binario || '–';
-    const pfLabel = document.createElement('div');
-    pfLabel.className = 'platform-label';
-    pfLabel.textContent = 'BIN';
-    platform.appendChild(pf);
-    platform.appendChild(pfLabel);
-
-    const delay = document.createElement('div');
-    delay.className = 'right';
-    const d = document.createElement('div');
-    d.className = `delay ${cls}`;
-    d.textContent = delayText(t.ritardo, t.stato);
-    delay.appendChild(d);
-
-    li.appendChild(time);
-    li.appendChild(mid);
-    li.appendChild(platform);
-    li.appendChild(delay);
-    list.appendChild(li);
-  }
+function renderHistory(rows) {
+  const wrap = document.getElementById('historyWrap');
+  renderListInto('history', rows, { useActualTime: true });
+  wrap.hidden = !rows || rows.length === 0;
 }
 
 async function refresh() {
   try {
-    const trains = await fetchTrains();
-    render(trains);
-    const updated = document.getElementById('updated');
-    updated.textContent = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    const rows = await fetchTrains();
+    const now = Date.now();
+    updateTrainState(rows, now);
+    const { upcoming, storico } = deriveLists(now);
+    latestUpcoming = upcoming;
+    latestHistory = storico;
+    hasFetchedOnce = true;
+    document.getElementById('error').hidden = true;
+    applyFilterAndRender();
+    document.getElementById('updated').textContent = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
   } catch (err) {
     document.getElementById('error').hidden = false;
   }
 }
 
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js');
+  });
+}
+
+initFilters();
 refresh();
 setInterval(refresh, REFRESH_MS);
 </script>
