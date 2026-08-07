@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Treni RE / Rubiera ↔ Parma</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0b0d12;
+    --card: #161a22;
+    --text: #f2f3f5;
+    --muted: #9aa3b2;
+    --ok: #34c759;
+    --warn: #ffb020;
+    --bad: #ff453a;
+    --line: #262b36;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  body { padding: 10px 10px 24px; }
+  header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 6px 4px 10px;
+  }
+  h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+  #updated { font-size: 0.75rem; color: var(--muted); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 10px;
+  }
+  li:first-child { border-top-left-radius: 12px; border-top-right-radius: 12px; }
+  li:last-child { border-bottom: none; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+  .time { font-size: 1.6rem; font-weight: 700; min-width: 4.4ch; font-variant-numeric: tabular-nums; }
+  .mid { flex: 1; min-width: 0; }
+  .route { font-size: 1.05rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .via { font-size: 0.78rem; color: var(--muted); }
+  .num { font-size: 0.75rem; color: var(--muted); }
+  .right { text-align: right; }
+  .platform {
+    font-size: 1.3rem; font-weight: 800;
+    min-width: 2.6ch; text-align: center;
+  }
+  .platform-label { font-size: 0.62rem; color: var(--muted); font-weight: 500; text-align: center; }
+  .delay { font-size: 0.95rem; font-weight: 700; margin-top: 2px; }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .status-tag {
+    font-size: 0.7rem; font-weight: 700; color: var(--bad);
+  }
+  #empty, #error {
+    text-align: center; color: var(--muted); padding: 40px 10px; font-size: 0.95rem;
+  }
+  #error { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>RE / Rubiera ↔ Parma</h1>
+  <span id="updated"></span>
+</header>
+<ul id="list"></ul>
+<div id="empty" hidden>Nessun treno regionale nella prossima finestra oraria.</div>
+<div id="error" hidden>Dati non disponibili al momento.</div>
+
+<script>
+// Nessun backend: fetch diretto dal browser all'API di ViaggiaTreno tramite
+// un CORS-proxy pubblico (proxy.cors.sh), che aggiunge l'header
+// Access-Control-Allow-Origin necessario per leggere la risposta.
+//
+// lc-debt: uso anonimo di proxy.cors.sh (nessuna x-cors-api-key). Funziona
+// oggi (verificato in sviluppo) ma non e' il modo ufficialmente supportato:
+// la doc del servizio richiede una API key gratuita pinnata all'origine.
+// Upgrade path se il proxy inizia a rispondere 401/429: creare un progetto
+// gratuito su https://cors.sh/console, pinnare la key "live_" al dominio
+// GitHub Pages, e valorizzare CORS_API_KEY qui sotto (viene gia' inviata
+// automaticamente come header se non vuota).
+const CORS_PROXY = 'https://proxy.cors.sh/';
+const CORS_API_KEY = ''; // es. 'live_xxxxxxxx', lasciare vuoto per uso anonimo
+const VIAGGIATRENO = 'http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno';
+
+const STATIONS = { S05023: 'Reggio Emilia', S05031: 'Rubiera', S05014: 'Parma' };
+const WEST_HINTS = ['PARMA', 'FIDENZA', 'PIACENZA', 'CREMONA', 'MILANO'];
+const EAST_BEYOND_RUBIERA_HINTS = ['RUBIERA', 'MODENA', 'BOLOGNA', 'IMOLA', 'RIMINI', 'ANCONA'];
+const REFRESH_MS = 30000;
+
+function formatViaggiatrenoDate(date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Rome', weekday: 'short', year: 'numeric', month: 'short',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(date);
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  let hour = get('hour');
+  if (hour === '24') hour = '00';
+  return `${get('weekday')} ${get('month')} ${get('day')} ${get('year')} ${hour}:${get('minute')}:${get('second')} GMT+0100`;
+}
+
+async function fetchPartenze(stationId, now) {
+  const target = `${VIAGGIATRENO}/partenze/${stationId}/${encodeURIComponent(formatViaggiatrenoDate(now))}`;
+  const headers = CORS_API_KEY ? { 'x-cors-api-key': CORS_API_KEY } : {};
+  const res = await fetch(CORS_PROXY + target, { headers, cache: 'no-store' });
+  if (!res.ok) throw new Error(`partenze ${stationId}: HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+function destText(t) { return (t.destinazione || '').toUpperCase(); }
+function fallbackWest(t) { return WEST_HINTS.some((h) => destText(t).includes(h)) ? new Set(['S05014']) : null; }
+function fallbackEast(t) {
+  const d = destText(t);
+  if (EAST_BEYOND_RUBIERA_HINTS.some((h) => d.includes(h))) return new Set(['S05023', 'S05031']);
+  if (d.includes('REGGIO EMILIA')) return new Set(['S05023']);
+  return null;
+}
+function trainStatus(t) {
+  if (t.provvedimento === 1) return 'cancellato';
+  if (t.provvedimento === 2) return 'parzialmente cancellato';
+  if (t.nonPartito) return 'non partito';
+  return 'regolare';
+}
+function buildRow(t, originId, destLabel) {
+  return {
+    numeroTreno: t.numeroTreno,
+    origine: STATIONS[originId],
+    destinazione: destLabel,
+    orarioProgrammato: t.compOrarioPartenza,
+    orarioPartenzaMs: t.orarioPartenza,
+    ritardo: typeof t.ritardo === 'number' ? t.ritardo : 0,
+    binario: t.binarioEffettivoPartenzaDescrizione || t.binarioProgrammatoPartenzaDescrizione || null,
+    stato: trainStatus(t),
+  };
+}
+function collect(partenze, stationId, fallbackFn, labelFor) {
+  const rows = [];
+  for (const t of partenze.filter((x) => x.categoriaDescrizione === 'REG')) {
+    const touched = fallbackFn(t);
+    if (!touched || touched.size === 0) continue;
+    const label = labelFor(touched);
+    if (!label) continue;
+    rows.push(buildRow(t, stationId, label));
+  }
+  return rows;
+}
+
+async function fetchTrains() {
+  const now = new Date();
+  const [reP, ruP, prP] = await Promise.all([
+    fetchPartenze('S05023', now),
+    fetchPartenze('S05031', now),
+    fetchPartenze('S05014', now),
+  ]);
+  const reRows = collect(reP, 'S05023', fallbackWest, () => 'Parma');
+  const ruRows = collect(ruP, 'S05031', fallbackWest, () => 'Parma');
+  const prRows = collect(prP, 'S05014', fallbackEast, (touched) =>
+    touched.has('S05031') ? 'Reggio Emilia e Rubiera' : touched.has('S05023') ? 'Reggio Emilia' : null
+  );
+  return [...reRows, ...ruRows, ...prRows].sort((a, b) => a.orarioPartenzaMs - b.orarioPartenzaMs);
+}
+
+function delayClass(min, stato) {
+  if (stato === 'cancellato' || stato === 'parzialmente cancellato') return 'bad';
+  if (stato === 'non partito') return 'warn';
+  if (min >= 15) return 'bad';
+  if (min >= 5) return 'warn';
+  return 'ok';
+}
+
+function delayText(min, stato) {
+  if (stato === 'cancellato') return 'CANCELLATO';
+  if (stato === 'parzialmente cancellato') return 'PARZ. CANCELLATO';
+  if (stato === 'non partito') return 'non partito';
+  if (!min || min <= 0) return 'in orario';
+  return `+${min} min`;
+}
+
+function render(trains) {
+  const list = document.getElementById('list');
+  const empty = document.getElementById('empty');
+  const error = document.getElementById('error');
+  error.hidden = true;
+  list.innerHTML = '';
+
+  if (!trains || trains.length === 0) {
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  for (const t of trains) {
+    const li = document.createElement('li');
+    const cls = delayClass(t.ritardo, t.stato);
+
+    const time = document.createElement('div');
+    time.className = 'time';
+    time.textContent = t.orarioProgrammato || '--:--';
+
+    const mid = document.createElement('div');
+    mid.className = 'mid';
+    const route = document.createElement('div');
+    route.className = 'route';
+    route.textContent = `${t.origine} → ${t.destinazione}`;
+    const sub = document.createElement('div');
+    sub.className = 'via';
+    sub.textContent = [t.via ? `via ${t.via}` : null, `REG ${t.numeroTreno}`].filter(Boolean).join(' · ');
+    mid.appendChild(route);
+    mid.appendChild(sub);
+
+    const platform = document.createElement('div');
+    platform.className = 'right';
+    const pf = document.createElement('div');
+    pf.className = 'platform';
+    pf.textContent = t.binario || '–';
+    const pfLabel = document.createElement('div');
+    pfLabel.className = 'platform-label';
+    pfLabel.textContent = 'BIN';
+    platform.appendChild(pf);
+    platform.appendChild(pfLabel);
+
+    const delay = document.createElement('div');
+    delay.className = 'right';
+    const d = document.createElement('div');
+    d.className = `delay ${cls}`;
+    d.textContent = delayText(t.ritardo, t.stato);
+    delay.appendChild(d);
+
+    li.appendChild(time);
+    li.appendChild(mid);
+    li.appendChild(platform);
+    li.appendChild(delay);
+    list.appendChild(li);
+  }
+}
+
+async function refresh() {
+  try {
+    const trains = await fetchTrains();
+    render(trains);
+    const updated = document.getElementById('updated');
+    updated.textContent = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  } catch (err) {
+    document.getElementById('error').hidden = false;
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
