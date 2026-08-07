@@ -1,6 +1,6 @@
 {
-  "name": "Treni RE / Rubiera ↔ Parma",
-  "short_name": "Treni RE↔PR",
+"name": "Treni",
+"short_name": "Treni",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
