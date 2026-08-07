@@ -121,7 +121,6 @@ const STATION_COORDS = {
 };
 const GEO_RADIUS_KM = 3;
 const WEST_HINTS = ['PARMA', 'FIDENZA', 'PIACENZA', 'CREMONA', 'MILANO'];
-const EAST_BEYOND_RUBIERA_HINTS = ['RUBIERA', 'MODENA', 'BOLOGNA', 'IMOLA', 'RIMINI', 'ANCONA'];
 const REFRESH_MS = 30000;
 const HISTORY_WINDOW_MS = 30 * 60000;
 const MAX_MISSED_CYCLES = 3; // tollera qualche hiccup del proxy CORS prima di droppare un treno mai piu' visto
@@ -161,12 +160,12 @@ async function fetchPartenze(stationId, now) {
 
 function destText(t) { return (t.destinazione || '').toUpperCase(); }
 function fallbackWest(t) { return WEST_HINTS.some((h) => destText(t).includes(h)) ? new Set(['S05014']) : null; }
-function fallbackEast(t) {
-  const d = destText(t);
-  if (EAST_BEYOND_RUBIERA_HINTS.some((h) => d.includes(h))) return new Set(['S05023', 'S05031']);
-  if (d.includes('REGGIO EMILIA')) return new Set(['S05023']);
-  return null;
-}
+// Un treno che va "oltre Rubiera" (Modena/Bologna/Ancona/...) non e' detto
+// che si fermi davvero a Rubiera (verificato 2026-08-07: treno 3929/3931
+// Piacenza->Ancona ferma a Reggio Emilia ma salta Rubiera). Il nome della
+// destinazione finale non basta: le fermate reali si sanno solo via
+// andamentoTreno (vedi fetchAndamento/collectFromParma piu' sotto).
+function isWestbound(t) { return WEST_HINTS.some((h) => destText(t).includes(h)); }
 function trainStatus(t) {
   if (t.provvedimento === 1) return 'cancellato';
   if (t.provvedimento === 2) return 'parzialmente cancellato';
@@ -199,6 +198,45 @@ function collect(partenze, stationId, fallbackFn, labelFor) {
   return rows;
 }
 
+// Cache delle fermate reali per treno (chiave codOrigine_numeroTreno_data,
+// numeroTreno da solo non e' univoco). Una corsa/giorno non cambia le sue
+// fermate schedulate entro la sessione, quindi non va invalidata: si perde
+// solo al reload (stesso pattern lc-debt di trainState).
+const andamentoCache = new Map();
+async function fetchAndamento(t) {
+  const key = `${t.codOrigine}_${t.numeroTreno}_${t.dataPartenzaTreno}`;
+  if (andamentoCache.has(key)) return andamentoCache.get(key);
+  try {
+    const target = `${VIAGGIATRENO}/andamentoTreno/${t.codOrigine}/${t.numeroTreno}/${t.dataPartenzaTreno}`;
+    const headers = CORS_API_KEY ? { 'x-cors-api-key': CORS_API_KEY } : {};
+    const res = await fetch(CORS_PROXY + target, { headers, cache: 'no-store' });
+    if (res.status === 204 || !res.ok) return null; // dato non disponibile questo giro, si ritenta al prossimo refresh (non si cachano i fallimenti)
+    const data = await res.json();
+    const stops = new Set((data.fermate || []).filter((f) => f.actualFermataType !== 3).map((f) => f.id));
+    andamentoCache.set(key, stops);
+    return stops;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Destinazione per la tab Parma: non si deduce dal nome della destinazione
+// finale (un regionale puo' saltare Rubiera pur continuando oltre, vedi
+// isWestbound() sopra) ma dalle fermate reali via andamentoTreno.
+async function collectFromParma(partenze, stationId) {
+  const candidates = partenze.filter((x) => x.categoriaDescrizione === 'REG' && !isWestbound(x));
+  const stopsList = await Promise.all(candidates.map(fetchAndamento)); // in parallelo: sequenziale su un proxy CORS fragile costerebbe secondi al primo giro
+  const rows = [];
+  candidates.forEach((t, i) => {
+    const stops = stopsList[i];
+    if (!stops) return; // fetch fallito/non disponibile: si scarta piuttosto che indovinare l'etichetta
+    const label = stops.has('S05031') ? 'Rubiera' : stops.has('S05023') ? 'Reggio Emilia' : null;
+    if (!label) return; // non passa da Reggio Emilia: altra linea (es. Parma-Suzzara, Pontremolese), non e' questa tratta
+    rows.push(buildRow(t, stationId, label));
+  });
+  return rows;
+}
+
 async function fetchTrains() {
   const now = new Date();
   const [reP, ruP, prP] = await Promise.all([
@@ -208,9 +246,7 @@ async function fetchTrains() {
   ]);
   const reRows = collect(reP, 'S05023', fallbackWest, () => 'Parma');
   const ruRows = collect(ruP, 'S05031', fallbackWest, () => 'Parma');
-  const prRows = collect(prP, 'S05014', fallbackEast, (touched) =>
-    touched.has('S05031') ? 'Reggio Emilia e Rubiera' : touched.has('S05023') ? 'Reggio Emilia' : null
-  );
+  const prRows = await collectFromParma(prP, 'S05014');
   // Ordinamento reale (per orario effettivo) applicato in deriveLists(), non qui.
   return [...reRows, ...ruRows, ...prRows];
 }

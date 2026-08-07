@@ -17,13 +17,43 @@ Dev locale: `cd .. && python3 -m http.server 8901`, apri `/re-parma-treni/`
 Fetch client-side a ViaggiaTreno (Trenitalia, API non ufficiale) via CORS-proxy
 pubblico `proxy.cors.sh` (anonimo, nessuna API key — lc-debt, rischio 401/429,
 upgrade path in README). Per ognuna delle 3 stazioni fisse (`STATIONS`):
-`fetchPartenze()` → `collect()` (filtra `REG`, classifica la destinazione via
-euristica sul nome, `fallbackWest`/`fallbackEast` + hint lists — non ci sono
-fermate reali, affidabile solo perche' su questa tratta nessun regionale salta
-stazioni) → `buildRow()` (shape normalizzata per riga).
+`fetchPartenze()` → `collect()`/`collectFromParma()` (filtra `REG`) →
+`buildRow()` (shape normalizzata per riga).
+
+Per Reggio Emilia e Rubiera (verso Parma) la destinazione e' sempre 'Parma'
+(`fallbackWest`/`WEST_HINTS` sul nome, nessuna ambiguita': Parma e' capolinea,
+Rubiera come origine implica gia' la fermata a Rubiera). Per Parma (verso est)
+**non** si deduce la destinazione dal nome del capolinea finale — vedi bug
+storico sotto — `collectFromParma()` chiama `andamentoTreno` (fermate reali)
+per ogni treno non chiaramente verso ovest (`isWestbound()`), cache in
+`andamentoCache` per corsa/giorno (mai invalidata in sessione, si perde al
+reload).
 
 **`t.via` in `buildTrainLi()` e' dead code**: letto ma mai impostato da
 `buildRow()`. Innocuo (sempre falsy), non serve cercarne l'origine.
+
+## Bug storico: destinazione dedotta dal nome invece che dalle fermate reali (fix 2026-08-07)
+
+La vecchia `fallbackEast()` assumeva che un treno diretto "oltre Rubiera"
+(Modena/Bologna/Ancona/...) si fermasse anche a Rubiera, e che un treno con
+destinazione non riconosciuta da nessuna hint list non fosse su questa
+tratta. Entrambe le assunzioni sono **false**, verificato live il 2026-08-07
+via `andamentoTreno/{codOrigine}/{numeroTreno}/{dataPartenzaTreno}`
+(fermata-per-fermata, campi `fermate[].id`/`stazione`/`tipoFermata`/
+`actualFermataType`):
+
+- Treno 3929/3931 (Piacenza → Ancona): ferma a Reggio Emilia **ma salta
+  Rubiera** — con la vecchia euristica sarebbe etichettato "Reggio Emilia e
+  Rubiera", sbagliato.
+- Treno 18131 (Piacenza → S.Benedetto del Tronto): stessa cosa (ferma a
+  Reggio+Modena+Bologna, salta Rubiera), ma la sua destinazione non matchava
+  nessuna hint → il treno era **invisibile** nella tab Parma.
+
+Fix: `collectFromParma()` non guarda piu' il nome della destinazione finale
+per decidere Rubiera vs Reggio Emilia, guarda le fermate reali. Le hint list
+(`WEST_HINTS`) restano solo per escludere a costo zero i treni ovviamente
+verso ovest, prima di spendere una chiamata `andamentoTreno`. **Non
+reintrodurre una classificazione basata sul nome della destinazione finale.**
 
 ## Bug storico: offset timezone hardcoded (fix 2026-08-07)
 
