@@ -94,14 +94,21 @@ const EAST_BEYOND_RUBIERA_HINTS = ['RUBIERA', 'MODENA', 'BOLOGNA', 'IMOLA', 'RIM
 const REFRESH_MS = 30000;
 
 function formatViaggiatrenoDate(date) {
+  // lc-debt fix (2026-08-07): l'offset era hardcoded a GMT+0100, sbagliato
+  // durante l'ora legale (CEST, fine marzo - fine ottobre). Per ~7 mesi
+  // l'anno l'app interrogava l'API un'ora nel futuro rispetto all'ora
+  // reale, rischiando di non mostrare treni imminenti. Ora l'offset e'
+  // calcolato dinamicamente per la data richiesta.
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Europe/Rome', weekday: 'short', year: 'numeric', month: 'short',
     day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    timeZoneName: 'longOffset',
   }).formatToParts(date);
   const get = (t) => parts.find((p) => p.type === t)?.value;
   let hour = get('hour');
   if (hour === '24') hour = '00';
-  return `${get('weekday')} ${get('month')} ${get('day')} ${get('year')} ${hour}:${get('minute')}:${get('second')} GMT+0100`;
+  const offset = (get('timeZoneName') || 'GMT+01:00').replace(':', '');
+  return `${get('weekday')} ${get('month')} ${get('day')} ${get('year')} ${hour}:${get('minute')}:${get('second')} ${offset}`;
 }
 
 async function fetchPartenze(stationId, now) {
