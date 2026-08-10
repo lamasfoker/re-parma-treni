@@ -2,7 +2,7 @@
 // mai le chiamate cross-origin verso il CORS-proxy/ViaggiaTreno (dati live,
 // mai da servire dalla cache). Strategia network-first per la navigazione,
 // cosi' un redeploy non lascia utenti bloccati su una versione stale.
-const CACHE_NAME = 'rpt-shell-v1';
+const CACHE_NAME = 'rpt-shell-v2';
 const SHELL = ['./', './index.html', './manifest.json'];
 
 self.addEventListener('install', (e) => {

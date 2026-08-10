@@ -123,3 +123,29 @@ Service worker: bypass totale delle richieste cross-origin (mai cache-are
 proxy.cors.sh/viaggiatreno.it, sono dati live), network-first per la
 navigazione. `start_url`/`scope` del manifest e path di registrazione dello SW
 sempre **relativi** (`./...`) per funzionare sotto il subpath GitHub Pages.
+
+## Bug storico: icona home-screen Android con sfondo colorato invece di bianco (fix 2026-08-10)
+
+`icon-192.png`/`icon-512.png` hanno sfondo trasparente (voluto, vedi commit
+`329bf7a`), ma `manifest.json` dichiarava solo `"purpose": "any"`. Da Android
+Oreo in poi le icone home-screen sono "adaptive icon": senza una entry
+`"purpose": "maskable"` esplicita, Chrome/Android genera lui stesso il layer
+di sfondo per l'icona trasparente, con un colore non controllato dall'app
+(verificato su Pixel 9 Pro: sfondo verde, non bianco). Fix: generate
+`icon-maskable-192.png`/`icon-maskable-512.png` (stesso artwork compositato
+su tela bianca opaca, treno scalato all'80% e centrato — safe-zone maskable,
+il mask circolare/squircle di Android ritaglia il 20% esterno) via ImageMagick:
+```sh
+magick icon-512.png -background white -alpha remove -alpha off tmp.png
+magick tmp.png -resize 80% -background white -gravity center -extent 512x512 icon-maskable-512.png
+```
+Aggiunte come entry **separate** in `manifest.json` (mai `"any maskable"`
+combinato in una entry — la spec lo permette ma il browser puo' ignorare
+l'intento maskable). Bump `CACHE_NAME` in `service-worker.js` necessario:
+`manifest.json` e' nello `SHELL` array, servito cache-first, un redeploy senza
+bump lascerebbe gli utenti gia' installati sul manifest vecchio. **Non
+dichiarare mai icone solo `any` senza una variante `maskable` corrispondente.**
+
+Nota: Android/Chrome genera e cachea l'adaptive icon al momento
+dell'installazione (WebAPK) — un utente con l'app gia' installata deve
+disinstallarla e reinstallarla per vedere il nuovo sfondo.
