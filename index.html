@@ -32,20 +32,22 @@
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
-  body { padding: 10px 10px 24px; }
+  body { padding: 10px 10px calc(24px + env(safe-area-inset-bottom)); }
   header {
     display: flex; align-items: baseline; justify-content: space-between;
     padding: 6px 4px 10px;
   }
   h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
   #updated { font-size: 0.75rem; color: var(--muted); }
-  #filters { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 12px; }
-  #filters button {
-    font-size: 0.8rem; padding: 6px 12px; border-radius: 999px;
+  .filter-group { padding: 0 4px 6px; }
+  .filter-group .section-label { padding: 4px 0 6px; }
+  #filtersOrigin, #filtersArrivo { display: flex; gap: 6px; flex-wrap: wrap; }
+  #filtersOrigin button, #filtersArrivo button {
+    font-size: 0.85rem; padding: 10px 16px; min-height: 44px; border-radius: 999px;
     border: 1px solid var(--line); background: var(--card); color: var(--text);
     font-family: inherit; cursor: pointer;
   }
-  #filters button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+  #filtersOrigin button.active, #filtersArrivo button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
   .section-label {
     font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
     letter-spacing: 0.03em; padding: 18px 4px 6px;
@@ -88,7 +90,14 @@
   <h1>RE / Rubiera ↔ Parma</h1>
   <span id="updated"></span>
 </header>
-<div id="filters"></div>
+<div class="filter-group">
+  <div class="section-label">Partenza</div>
+  <div id="filtersOrigin"></div>
+</div>
+<div class="filter-group" id="arrivoGroup" hidden>
+  <div class="section-label">Verso</div>
+  <div id="filtersArrivo"></div>
+</div>
 <ul id="list"></ul>
 <div id="empty" hidden></div>
 <div id="error" hidden>Dati non disponibili al momento.</div>
@@ -289,13 +298,31 @@ function deriveLists(now) {
   storico.sort((a, b) => b.actualDepartureMs - a.actualDepartureMs);
   return { upcoming, storico };
 }
-
-// --- Filtro stazione di partenza + geolocalizzazione ---
+// --- Filtro partenza/arrivo + geolocalizzazione ---
 let selectedStation = null; // codice stazione, o null = "Tutte"
+let selectedArrivo = null; // null = 'Entrambe', altrimenti 'Reggio Emilia' | 'Rubiera' — rilevante solo se selectedStation === 'S05014'
 let userOverrodeFilter = false;
 let latestUpcoming = [];
 let latestHistory = [];
 let hasFetchedOnce = false;
+
+const SELECTION_KEY = 'rpt-selection';
+function loadSelection() {
+  try {
+    const raw = localStorage.getItem(SELECTION_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data && typeof data === 'object') {
+      selectedStation = data.origin || null;
+      selectedArrivo = data.arrivo || null;
+    }
+  } catch (e) { /* storage non disponibile o dato corrotto: si riparte da "Tutte" */ }
+}
+function saveSelection() {
+  try {
+    localStorage.setItem(SELECTION_KEY, JSON.stringify({ origin: selectedStation, arrivo: selectedArrivo }));
+  } catch (e) { /* storage piena/non disponibile: persistenza best-effort */ }
+}
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
@@ -306,31 +333,63 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function makeChip(code, label) {
+function makeChip(code, label, onClick) {
   const btn = document.createElement('button');
   btn.textContent = label;
   btn.dataset.code = code || '';
-  btn.addEventListener('click', () => {
-    userOverrodeFilter = true;
-    selectedStation = code;
-    applyFilterAndRender();
-  });
+  btn.addEventListener('click', () => onClick(code));
   return btn;
 }
 
-function updateFilterChipsUI() {
-  const container = document.getElementById('filters');
+function updateChipsActiveState(containerId, selectedValue) {
+  const container = document.getElementById(containerId);
   for (const btn of container.children) {
     const code = btn.dataset.code || null;
-    btn.classList.toggle('active', code === selectedStation);
+    btn.classList.toggle('active', code === selectedValue);
   }
 }
 
+function onOriginChipClick(code) {
+  userOverrodeFilter = true;
+  selectedStation = code;
+  updateArrivoRow();
+  saveSelection();
+  applyFilterAndRender();
+}
+
+function onArrivoChipClick(label) {
+  selectedArrivo = label;
+  saveSelection();
+  applyFilterAndRender();
+}
+
+// La riga "Verso" appare solo quando la partenza e' Parma: e' l'unica
+// stazione con due destinazioni reali possibili (Reggio Emilia o Rubiera,
+// verificate via andamentoTreno in collectFromParma). Da RE/Rubiera la
+// destinazione e' sempre Parma: chiedere l'arrivo sarebbe un tap a vuoto.
+function updateArrivoRow() {
+  const group = document.getElementById('arrivoGroup');
+  const container = document.getElementById('filtersArrivo');
+  if (selectedStation !== 'S05014') {
+    group.hidden = true;
+    return;
+  }
+  group.hidden = false;
+  if (!container.children.length) {
+    container.appendChild(makeChip(null, 'Entrambe', onArrivoChipClick));
+    container.appendChild(makeChip('Reggio Emilia', 'Reggio Emilia', onArrivoChipClick));
+    container.appendChild(makeChip('Rubiera', 'Rubiera', onArrivoChipClick));
+  }
+  updateChipsActiveState('filtersArrivo', selectedArrivo);
+}
+
 function initFilters() {
-  const container = document.getElementById('filters');
-  container.appendChild(makeChip(null, 'Tutte'));
-  for (const code of Object.keys(STATIONS)) container.appendChild(makeChip(code, STATIONS[code]));
-  updateFilterChipsUI();
+  loadSelection();
+  const container = document.getElementById('filtersOrigin');
+  container.appendChild(makeChip(null, 'Tutte', onOriginChipClick));
+  for (const code of Object.keys(STATIONS)) container.appendChild(makeChip(code, STATIONS[code], onOriginChipClick));
+  updateChipsActiveState('filtersOrigin', selectedStation);
+  updateArrivoRow();
   tryAutoSelectByGeolocation();
 }
 
@@ -348,6 +407,9 @@ function tryAutoSelectByGeolocation() {
       }
       if (nearest && nearestDist <= GEO_RADIUS_KM) {
         selectedStation = nearest;
+        updateChipsActiveState('filtersOrigin', selectedStation);
+        updateArrivoRow();
+        saveSelection();
         applyFilterAndRender();
       }
     },
@@ -357,12 +419,16 @@ function tryAutoSelectByGeolocation() {
 }
 
 function applyFilterAndRender() {
-  updateFilterChipsUI();
+  updateChipsActiveState('filtersOrigin', selectedStation);
+  updateChipsActiveState('filtersArrivo', selectedArrivo);
   if (!hasFetchedOnce) return; // aspetta il primo fetch, altrimenti si mostra "vuoto" prima del tempo
   const filterName = selectedStation ? STATIONS[selectedStation] : null;
-  const upcoming = filterName ? latestUpcoming.filter((r) => r.origine === filterName) : latestUpcoming;
-  const storico = filterName ? latestHistory.filter((r) => r.origine === filterName) : latestHistory;
-  render(upcoming, filterName);
+  const arrivoActive = selectedStation === 'S05014' ? selectedArrivo : null;
+  const byOrigin = (r) => !filterName || r.origine === filterName;
+  const byArrivo = (r) => !arrivoActive || r.destinazione === arrivoActive;
+  const upcoming = latestUpcoming.filter((r) => byOrigin(r) && byArrivo(r));
+  const storico = latestHistory.filter((r) => byOrigin(r) && byArrivo(r));
+  render(upcoming, filterName, arrivoActive);
   renderHistory(storico);
 }
 
@@ -432,12 +498,14 @@ function renderListInto(ulId, trains, opts) {
   for (const t of trains) list.appendChild(buildTrainLi(t, opts));
 }
 
-function render(trains, filterName) {
+function render(trains, filterName, arrivoActive) {
   const empty = document.getElementById('empty');
   renderListInto('list', trains);
   if (!trains || trains.length === 0) {
     empty.textContent = filterName
-      ? `Nessun treno da ${filterName} nella prossima finestra oraria.`
+      ? (arrivoActive
+          ? `Nessun treno da ${filterName} verso ${arrivoActive} nella prossima finestra oraria.`
+          : `Nessun treno da ${filterName} nella prossima finestra oraria.`)
       : 'Nessun treno regionale nella prossima finestra oraria.';
     empty.hidden = false;
   } else {
