@@ -14,9 +14,12 @@ Dev locale: `cd .. && python3 -m http.server 8901`, apri `/re-parma-treni/`
 
 ## Fonte dati e pipeline
 
-Fetch client-side a ViaggiaTreno (Trenitalia, API non ufficiale) via CORS-proxy
-pubblico `proxy.cors.sh` (anonimo, nessuna API key — lc-debt, rischio 401/429,
-upgrade path in README). Per ognuna delle 3 stazioni fisse (`STATIONS`):
+Fetch client-side a ViaggiaTreno (Trenitalia, API non ufficiale) via proxy
+proprio su Deno Deploy: `proxy/main.ts` (playground, deploy manuale, URL in
+`VIAGGIATRENO`), solo `/partenze` e `/andamentoTreno`, CORS solo per
+`lamasfoker.github.io` e `localhost:8901`. Il WAF Akamai di viaggiatreno.it
+rifiuta User-Agent non da browser e l'egress Cloudflare (Worker, corsproxy.io):
+**non tornare a proxy di terzi**. `proxy.cors.sh` e' morto a ottobre 2026. Per ognuna delle 3 stazioni fisse (`STATIONS`):
 `fetchPartenze()` → `collect()`/`collectFromParma()` (filtra `REG`) →
 `buildRow()` (shape normalizzata per riga).
 
@@ -120,7 +123,7 @@ perche' in pratica pesano meno del base64 inline). Generate una tantum via
 Chrome headless (`--headless --screenshot=... --window-size=512,512` su un
 HTML con l'emoji 🚂 su sfondo colorato) + `sips -z` per le altre dimensioni.
 Service worker: bypass totale delle richieste cross-origin (mai cache-are
-proxy.cors.sh/viaggiatreno.it, sono dati live), network-first per la
+proxy Deno/viaggiatreno.it, sono dati live), network-first per la
 navigazione. `start_url`/`scope` del manifest e path di registrazione dello SW
 sempre **relativi** (`./...`) per funzionare sotto il subpath GitHub Pages.
 

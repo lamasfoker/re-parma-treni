@@ -7,7 +7,7 @@ Dashboard a colpo d'occhio (zero click) dei treni regionali tra Reggio Emilia/Ru
 **Nessun backend.** `index.html` è una singola pagina statica che, direttamente dal browser:
 
 1. Chiama l'API non ufficiale di ViaggiaTreno (Trenitalia) per i treni in partenza da Reggio Emilia, Rubiera e Parma.
-2. Passa attraverso [proxy.cors.sh](https://cors.sh) (CORS-proxy pubblico) per superare il blocco CORS di `viaggiatreno.it` — senza questo passaggio il browser rifiuterebbe di leggere la risposta.
+2. Passa attraverso un piccolo proxy su Deno Deploy (`proxy/main.ts`) per superare il blocco CORS di `viaggiatreno.it` — senza questo passaggio il browser rifiuterebbe di leggere la risposta.
 3. Filtra solo i treni regionali (`REG`) che collegano le tre stazioni (classificazione via nome destinazione: i regionali su questa tratta della linea Milano-Bologna fermano in tutte le stazioni intermedie, quindi non serve interrogare le fermate treno per treno).
 4. Mostra tutto in un'unica lista ordinata per orario effettivo di partenza; un filtro per stazione di partenza si pre-seleziona da solo in base alla posizione (se sei vicino a una delle tre stazioni), altrimenti resta su "Tutte".
 5. Uno storico ("Partiti di recente") mostra i treni partiti negli ultimi 30 minuti.
@@ -18,7 +18,7 @@ Tentativo iniziale: un Cloudflare Worker come backend. **Scartato**: il WAF di `
 
 ## lc-debt (limiti noti, con upgrade path)
 
-- **Proxy CORS anonimo**: `index.html` usa `proxy.cors.sh` senza API key. Funziona (verificato), ma non è il modo ufficialmente supportato dal servizio, che documenta un'API key gratuita pinnata al dominio. Se il proxy inizia a rispondere 401/429: creare un progetto gratuito su [cors.sh/console](https://cors.sh/console), pinnare una key `live_` al dominio GitHub Pages, e valorizzare la costante `CORS_API_KEY` in cima allo `<script>` di `index.html`.
+- **Proxy su Deno Deploy, deploy manuale**: `proxy/main.ts` gira come playground su [console.deno.com](https://console.deno.com) (piano free: 1M richieste/mese; l'app fa ~3 richieste ogni 30s per tab aperta). Una modifica a `proxy/main.ts` va incollata a mano nel playground e ri-deployata: nessun deploy automatico. Storia: `proxy.cors.sh` è morto a ottobre 2026 (Cloudflare `error code: 1016`, lista treni vuota); `corsproxy.io` riceve `403 Access Denied` dal WAF Akamai di viaggiatreno.it, come i Cloudflare Worker. Il WAF rifiuta anche User-Agent non da browser: il proxy ne manda uno da Chrome.
 - **Classificazione per nome destinazione, non per fermate effettive**: affidabile su questa tratta (nessun servizio regionale "skip-stop"), ma teoricamente meno preciso di una verifica esplicita delle fermate (`andamentoTreno`). Se in futuro serve gestire linee con fermate saltate, vedere la cronologia del repo per l'implementazione basata su `fermate` (scartata qui solo per il blocco WAF incontrato lato Worker, non per un difetto della tecnica in sé).
 - **Storico solo in-memory**: la sezione "Partiti di recente" vive solo nella sessione della pagina aperta, si azzera al reload. Upgrade path se serve persistenza: localStorage con TTL 30min.
 

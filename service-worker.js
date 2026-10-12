@@ -19,7 +19,7 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (url.origin !== self.location.origin) return; // mai proxy.cors.sh / viaggiatreno.it
+  if (url.origin !== self.location.origin) return; // mai il proxy Deno / viaggiatreno.it
 
   if (e.request.mode === 'navigate') {
     e.respondWith(
